@@ -1,5 +1,10 @@
 ﻿# Changelog
 
+## 0.3.1 (2022-4-7)
+
+  - Upgarde framework to net6.0
+  - 
+
 ## 0.3.0 (2020-11-13)
 
  - Switch to using Portable.BouncyCastle package and update to the latest version 1.8.8.

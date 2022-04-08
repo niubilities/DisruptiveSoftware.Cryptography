@@ -1,42 +1,60 @@
-﻿using DisruptiveSoftware.Cryptography.Extensions;
-using Org.BouncyCastle.OpenSsl;
-using Org.BouncyCastle.Security;
-using Org.BouncyCastle.X509;
-using System;
-using System.IO;
-using System.Security;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
-using System.Text;
-
-namespace DisruptiveSoftware.Cryptography.Utils
+﻿namespace DisruptiveSoftware.Cryptography.Utils
 {
+    using System.Reflection;
+    using System.Security;
+    using System.Security.Cryptography;
+    using System.Security.Cryptography.X509Certificates;
+    using System.Text;
+    using DisruptiveSoftware.Cryptography.Extensions;
+    using Org.BouncyCastle.OpenSsl;
+    using Org.BouncyCastle.Security;
+    using Org.BouncyCastle.X509;
+
     public static class CertificateUtils
     {
-        public static string ExportPublicKeyToPEM(byte[] certificateData)
+        public static T Export<T>(byte[] snkData, Func<RSACryptoServiceProvider, T> processor)
         {
-            using (var textWriter = new StringWriter())
-            {
-                var x509CertificateParser = new X509CertificateParser();
-                var x509Certificate = x509CertificateParser.ReadCertificate(certificateData);
-                var asymmetricKeyParameter = x509Certificate.GetPublicKey();
-                var pemWriter = new PemWriter(textWriter);
-                pemWriter.WriteObject(asymmetricKeyParameter);
+            using RSACryptoServiceProvider rsa = new();
+            rsa.ImportCspBlob(snkData);
 
-                return pemWriter.Writer.ToString();
-            }
+            return processor(rsa);
         }
 
-        public static string ExportPublicKeyCertificateToPEM(byte[] certificateData)
+        public static byte[] ExportPrivateKey(byte[] certificateData, SecureString certificatePassword)
         {
-            using (var textWriter = new StringWriter())
-            {
-                var x509CertificateParser = new X509CertificateParser();
-                var x509Certificate = x509CertificateParser.ReadCertificate(certificateData);
-                var pemWriter = new PemWriter(textWriter);
-                pemWriter.WriteObject(x509Certificate);
+            var privateKey = ExportPrivateKeyToPEM(certificateData, certificatePassword);
 
-                return pemWriter.Writer.ToString();
+            // Certificate does not have a private key.
+            if (privateKey.IsNullOrEmpty()) return null;
+
+            var stringBuilder = new StringBuilder();
+
+            foreach (var pemLine in privateKey.Split('\n'))
+            {
+                // Trim padding CR and white spaces.
+                var line = pemLine.TrimEnd('\r').Trim();
+
+                // Skip directives and empty lines.
+                if (!(line.Contains("BEGIN RSA PRIVATE KEY") || line.Contains("END RSA PRIVATE KEY") ||
+                      line.Length == 0))
+                    stringBuilder.Append(line);
+            }
+
+            // Decode Base64 to DER.
+            return Convert.FromBase64String(stringBuilder.ToString());
+        }
+
+        public static string ExportPrivateKeyAsXMLString(byte[] certificateData, SecureString certificatePassword)
+        {
+            var x509Certificate2 = new X509Certificate2(
+                certificateData,
+                certificatePassword,
+                X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet
+            );
+
+            using (var rsa = x509Certificate2.GetRSAPrivateKey())
+            {
+                return rsa.ToXmlString(true);
             }
         }
 
@@ -52,41 +70,15 @@ namespace DisruptiveSoftware.Cryptography.Utils
             }
         }
 
-        public static byte[] ExportPublicKeyCertificate(byte[] certificateData, SecureString certificatePassword)
-        {
-            var x509Certificate2 = new X509Certificate2(certificateData, certificatePassword);
-
-            return x509Certificate2.Export(X509ContentType.Cert);
-        }
-
-        public static string ExportPublicKeyCertificateToBase64(byte[] certificateData, SecureString certificatePassword)
-        {
-            return Convert.ToBase64String(ExportPublicKeyCertificate(certificateData, certificatePassword));
-        }
-
-        public static string ExportPublicKeyCertificateToPEM(byte[] certificateData, SecureString certificatePassword)
-        {
-            var stringBuilder = new StringBuilder();
-
-            stringBuilder.AppendLine("-----BEGIN CERTIFICATE-----");
-            stringBuilder.AppendLine(Convert.ToBase64String(ExportPublicKeyCertificate(certificateData, certificatePassword), Base64FormattingOptions.InsertLineBreaks));
-            stringBuilder.AppendLine("-----END CERTIFICATE-----");
-
-            return stringBuilder.ToString();
-        }
-
         public static string ExportPrivateKeyToPEM(byte[] certificateData, SecureString certificatePassword)
         {
-            var x509Certificate2 = new X509Certificate2(
+            using var x509Certificate2 = new X509Certificate2(
                 certificateData,
                 certificatePassword,
                 X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet
             );
 
-            if (!x509Certificate2.HasPrivateKey)
-            {
-                return null;
-            }
+            if (!x509Certificate2.HasPrivateKey) return null;
 
             using (var rsa = x509Certificate2.PrivateKey as RSACryptoServiceProvider)
             {
@@ -94,15 +86,68 @@ namespace DisruptiveSoftware.Cryptography.Utils
             }
         }
 
-        public static byte[] ExportPrivateKey(byte[] certificateData, SecureString certificatePassword)
+        public static byte[] ExportPublicKeyCertificate(byte[] certificateData, SecureString certificatePassword)
         {
-            var privateKey = ExportPrivateKeyToPEM(certificateData, certificatePassword);
-            
-            // Certificate does not have a private key.
-            if (privateKey.IsNullOrEmpty())
+            using var x509Certificate2 = new X509Certificate2(certificateData, certificatePassword);
+
+            return x509Certificate2.Export(X509ContentType.Cert);
+        }
+
+        public static string ExportPublicKeyCertificateToBase64(byte[] certificateData,
+            SecureString certificatePassword)
+        {
+            return Convert.ToBase64String(ExportPublicKeyCertificate(certificateData, certificatePassword));
+        }
+
+        public static string ExportPublicKeyCertificateToPEM(byte[] certificateData)
+        {
+            using (var textWriter = new StringWriter())
             {
-                return null;
+                var x509CertificateParser = new X509CertificateParser();
+                var x509Certificate = x509CertificateParser.ReadCertificate(certificateData);
+                var pemWriter = new PemWriter(textWriter);
+                pemWriter.WriteObject(x509Certificate);
+
+                return pemWriter.Writer.ToString();
             }
+        }
+
+        public static string ExportPublicKeyCertificateToPEM(byte[] certificateData, SecureString certificatePassword)
+        {
+            var stringBuilder = new StringBuilder();
+
+            stringBuilder.AppendLine("-----BEGIN CERTIFICATE-----");
+
+            stringBuilder.AppendLine(
+                Convert.ToBase64String(
+                    ExportPublicKeyCertificate(certificateData, certificatePassword),
+                    Base64FormattingOptions.InsertLineBreaks));
+
+            stringBuilder.AppendLine("-----END CERTIFICATE-----");
+
+            return stringBuilder.ToString();
+        }
+
+        public static string ExportPublicKeyToPEM(byte[] certificateData)
+        {
+            using (var textWriter = new StringWriter())
+            {
+                var x509CertificateParser = new X509CertificateParser();
+                var x509Certificate = x509CertificateParser.ReadCertificate(certificateData);
+                var asymmetricKeyParameter = x509Certificate.GetPublicKey();
+                var pemWriter = new PemWriter(textWriter);
+                pemWriter.WriteObject(asymmetricKeyParameter);
+
+                return pemWriter.Writer.ToString();
+            }
+        }
+
+        public static byte[] ExportSnkPrivateKey(byte[] certificateData)
+        {
+            var privateKey = ExportSnkPrivateKeyToPEM(certificateData);
+
+            // Certificate does not have a private key.
+            if (privateKey.IsNullOrEmpty()) return null;
 
             var stringBuilder = new StringBuilder();
 
@@ -112,27 +157,68 @@ namespace DisruptiveSoftware.Cryptography.Utils
                 var line = pemLine.TrimEnd('\r').Trim();
 
                 // Skip directives and empty lines.
-                if (!(line.Contains("BEGIN RSA PRIVATE KEY") || line.Contains("END RSA PRIVATE KEY") || line.Length == 0))
-                {
+                if (!(line.Contains("BEGIN RSA PRIVATE KEY") || line.Contains("END RSA PRIVATE KEY") ||
+                      line.Length == 0))
                     stringBuilder.Append(line);
-                }
             }
 
             // Decode Base64 to DER.
             return Convert.FromBase64String(stringBuilder.ToString());
         }
 
-        public static string ExportPrivateKeyAsXMLString(byte[] certificateData, SecureString certificatePassword)
+        public static string ExportSnkPrivateKeyToPEM(byte[] snkCertificateData)
         {
-            var x509Certificate2 = new X509Certificate2(
-                 certificateData,
-                 certificatePassword,
-                 X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet
-             );
+            return Export(snkCertificateData, ExportPrivateKeyToPEM);
+        }
 
-            using (var rsa = x509Certificate2.PrivateKey as RSA)
+        public static byte[] ExportSnkPublicKeyCertificate(byte[] snkCertificateData)
+        {
+            return Export(
+                snkCertificateData,
+                rsa =>
+                {
+                    var destination = new Span<byte>();
+                    rsa.TryExportRSAPublicKey(destination, out _);
+
+                    return destination.ToArray();
+                });
+        }
+
+        public static string ExportSnkPublicKeyCertificateToPEM(byte[] certificateData)
+        {
+            var stringBuilder = new StringBuilder();
+
+            stringBuilder.AppendLine("-----BEGIN CERTIFICATE-----");
+
+            stringBuilder.AppendLine(
+                Convert.ToBase64String(
+                    ExportSnkPublicKeyCertificate(certificateData),
+                    Base64FormattingOptions.InsertLineBreaks));
+
+            stringBuilder.AppendLine("-----END CERTIFICATE-----");
+
+            return stringBuilder.ToString();
+        }
+
+        public static byte[] GetPublicKey(byte[] snkData)
+        {
+            var snkp = new StrongNameKeyPair(snkData);
+            var publicKey = snkp.PublicKey;
+
+            return publicKey;
+        }
+
+        public static byte[] GetPublicKeyToken(byte[] snkPublicKey)
+        {
+            using (var csp = new SHA1CryptoServiceProvider())
             {
-                return rsa.ToXmlString(true);
+                var hash = csp.ComputeHash(snkPublicKey);
+
+                var token = new byte[8];
+
+                for (var i = 0; i < 8; i++) token[i] = hash[hash.Length - i - 1];
+
+                return token;
             }
         }
     }
